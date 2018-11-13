@@ -5,8 +5,8 @@ Includes two different approaches - hierarchical clustering of pairwise distance
 Installation
 ------------
 
-    git clone http://github.com/txje/XXX
-    cd XXX
+    git clone http://github.com/txje/flac
+    cd flac
     mkdir incl
     cd incl
     git clone http://github.com/attractivechaos/klib
