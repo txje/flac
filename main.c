@@ -4,6 +4,7 @@
 #include <stdlib.h>
 #include <zlib.h>
 #include "incl/klib/kseq.h"
+#include "incl/minimap2/minimap.h"
 #include "hierarch.h"
 #include "paf.h"
 
@@ -18,9 +19,9 @@ void usage() {
   printf("Options:\n");
   printf("  -q: FASTA/Q[.gz] file with reads\n");
   printf("  -r: Reference FASTA/Q[.gz] or precomputed index file\n");
-  printf("  --paf: PAF alignment file, or '-' for stdin\n");
+  printf("  -p, --paf: PAF alignment file, or '-' for stdin\n");
   printf("  -t: Threads (default: 1)\n");
-  printf("  -p: Sequence type preset\n");
+  printf("  -s: Sequence type preset\n");
   printf("      map-ont: Oxford Nanopore (default)\n");
   printf("      map-pb:  Pacbio\n");
   printf("  -f, --align-fraction: Portion of a read that must align properly (defaults to --align-length threshold)\n");
@@ -38,7 +39,7 @@ static struct option long_options[] = {
   { "align-accuracy",         required_argument, 0, 'a' },
   { "verbose",                no_argument,       0, 'v' },
   { "help",                   no_argument,       0, 'h' },
-  { "paf",                    required_argument, 0, 0 },
+  { "paf",                    required_argument, 0, 'p' },
   { "version",                no_argument,       0, 0 },
   { 0, 0, 0, 0}
 };
@@ -49,9 +50,11 @@ int parse_paf(char* paf_file) {
   paf_rec_t r;
   int ret = paf_read(p, &r);
   while(ret == 0) {
-    fprintf(af, "%s\t%d\t%d\t%d\t%c\t", r.qn, r.ql, r.qs, r.qe, "+-"[r.rev]);
-    fprintf(af, "%s\t%d\t%d\t%d\t%d\t%d\t%d", r.tn, r.tl, r.ts, r.te, r.ml, r.bl, r.mq);
-    fprintf(af, "\n");
+    /*
+    fprintf(stdout, "%s\t%d\t%d\t%d\t%c\t", r.qn, r.ql, r.qs, r.qe, "+-"[r.rev]);
+    fprintf(stdout, "%s\t%d\t%d\t%d\t%d\t%d\t%d", r.tn, r.tl, r.ts, r.te, r.ml, r.bl, r.mq);
+    fprintf(stdout, "\t%s\n", r.cigar);
+    */
     ret = paf_read(p, &r);
   }
   paf_close(p);
@@ -74,7 +77,7 @@ int main(int argc, char *argv[]) {
 
   int opt, long_idx;
   opterr = 0;
-  while ((opt = getopt_long(argc, argv, "q:r:t:p:f:l:a:vh", long_options, &long_idx)) != -1) {
+  while ((opt = getopt_long(argc, argv, "q:r:t:p:s:f:l:a:vh", long_options, &long_idx)) != -1) {
     switch (opt) {
       case 'q':
         read_fasta = optarg;
@@ -85,7 +88,7 @@ int main(int argc, char *argv[]) {
       case 't':
         n_threads = atoi(optarg);
         break;
-      case 'p':
+      case 's':
         preset = optarg;
         break;
       case 'f':
@@ -97,18 +100,18 @@ int main(int argc, char *argv[]) {
       case 'l':
         align_length = atoi(optarg);
         break;
+      case 'p':
+        paf_file = optarg;
+        break;
       case 'v':
         verbose = 1;
-        break;
-      case 'c':
-        careful = 1;
         break;
       case 'h':
         usage();
         return 0;
         break;
       case '?':
-        if (optopt == 'q' || optopt == 'r' || optopt == 't' || optopt == 'f' || optopt == 'a' || optopt == 'p' || optopt == 'l')
+        if (optopt == 'q' || optopt == 'r' || optopt == 't' || optopt == 'f' || optopt == 'a' || optopt == 'p' || optopt == 'l' || optopt == 's')
           fprintf(stderr, "Option -%c requires an argument.\n", optopt);
         else if (isprint (optopt))
           fprintf(stderr, "Unknown option `-%c'.\n", optopt);
@@ -129,6 +132,10 @@ int main(int argc, char *argv[]) {
         usage();
         return 1;
     }
+  }
+
+  if(paf_file != NULL) {
+    parse_paf(paf_file);
   }
 
   // tests

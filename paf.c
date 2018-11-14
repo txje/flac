@@ -8,7 +8,7 @@
 #include <string.h>
 #include "paf.h"
 
-#include "../incl/klib/kseq.h"
+#include "incl/klib/kseq.h"
 KSTREAM_INIT(gzFile, gzread, 0x10000)
 
 paf_file_t *paf_open(const char *fn)
@@ -55,6 +55,11 @@ int paf_parse(int l, char *s, paf_rec_t *pr) // s must be NULL terminated
     else if (t == 9) pr->ml = strtol(q, &r, 10);
     else if (t == 10) pr->bl = strtol(q, &r, 10);
     else if (t == 11) pr->mq = strtol(q, &r, 10);
+    else if (t >= 12) { // SAM-type key-value pairs
+      if(strncmp(q, "cg:Z:", 5) == 0) { // CIGAR
+        pr->cigar = q+5;
+      }
+    }
     ++t, q = i < l? &s[i+1] : 0;
   }
   if(t < 11) {
