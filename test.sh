@@ -4,7 +4,7 @@ reads=test/aav.1000-3000.d0.01.c16x100.nanosim.fasta
 ref=test/aav_1.ncbi.fasta
 paf=test/ns_0.01x16_to_aav.paf
 
-./flac -q $reads -r $ref -p $paf > aav_nanosim_test_result.tsv
+./flac -q $reads -r $ref -p $paf -d aav_nanosim.dist > aav_nanosim_test_result.tsv
 
 echo
 echo "Expect 16 clusters x 100 reads each"

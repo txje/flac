@@ -37,13 +37,19 @@ void usage() {
   printf("  -q: FASTA/Q[.gz] file with reads\n");
   printf("  -r: Reference FASTA/Q[.gz] or precomputed index file\n");
   printf("  -p, --paf: PAF alignment file, or '-' for stdin\n");
-  printf("  -t: Threads (default: 1)\n");
-  printf("  -s: Sequence type preset\n");
-  printf("      map-ont: Oxford Nanopore (default)\n");
-  printf("      map-pb:  Pacbio\n");
-  printf("  -f, --align-fraction: Portion of a read that must align properly (defaults to --align-length threshold)\n");
-  printf("  -l, --align-length: Minimum aligned bp (default: 100)\n");
-  printf("  -a, --align-accuracy: Minimum accuracy of aligned portion of a read (default: 0.6)\n");
+  printf("  -d, --distance-matrix: Write (or read, if it exists) distance matrix file\n");
+  printf("  -b, --begin: begin position to evaluate (in single ref seq)\n");
+  printf("  -e, --end: end position to evaluate (in single ref seq)\n");
+  printf("\n");
+  printf("  Alignment parameters:\n");
+  printf("    -t: Threads (default: 1)\n");
+  printf("    -s: Sequence type preset\n");
+  printf("        map-ont: Oxford Nanopore (default)\n");
+  printf("        map-pb:  Pacbio\n");
+  printf("    -f, --align-fraction: Portion of a read that must align properly (defaults to --align-length threshold)\n");
+  printf("    -l, --align-length: Minimum aligned bp (default: 100)\n");
+  printf("    -a, --align-accuracy: Minimum accuracy of aligned portion of a read (default: 0.6)\n");
+  printf("\n");
   printf("  -v, --verbose: verbose\n");
   printf("  -h, --help: show this\n");
   printf("  --version: show version information\n");
@@ -58,6 +64,9 @@ static struct option long_options[] = {
   { "help",                   no_argument,       0, 'h' },
   { "paf",                    required_argument, 0, 'p' },
   { "version",                no_argument,       0, 0 },
+  { "distance-matrix",        required_argument, 0, 'd' },
+  { "begin",                  required_argument, 0, 'b' },
+  { "end",                    required_argument, 0, 'e' },
   { 0, 0, 0, 0}
 };
 
@@ -69,16 +78,19 @@ int main(int argc, char *argv[]) {
   char* ref_fasta = NULL;
   char* paf_file = NULL;
   char* preset = "map-ont";
+  char* distance_matrix = NULL;
   float align_fraction = -1;
   float align_accuracy = 0.6;
   int align_length = 100;
   int n_threads = 1;
   int verbose = 0;
+  int st = 0;
+  int en = 0;
 
   // ---------- options ----------
   int opt, long_idx;
   opterr = 0;
-  while ((opt = getopt_long(argc, argv, "q:r:t:p:s:f:l:a:vh", long_options, &long_idx)) != -1) {
+  while ((opt = getopt_long(argc, argv, "q:r:t:p:d:b:e:s:f:l:a:vh", long_options, &long_idx)) != -1) {
     switch (opt) {
       case 'q':
         read_fasta = optarg;
@@ -104,6 +116,15 @@ int main(int argc, char *argv[]) {
       case 'p':
         paf_file = optarg;
         break;
+      case 'd':
+        distance_matrix = optarg;
+        break;
+      case 'b':
+        st = atoi(optarg);
+        break;
+      case 'e':
+        en = atoi(optarg);
+        break;
       case 'v':
         verbose = 1;
         break;
@@ -112,7 +133,7 @@ int main(int argc, char *argv[]) {
         return 0;
         break;
       case '?':
-        if (optopt == 'q' || optopt == 'r' || optopt == 't' || optopt == 'f' || optopt == 'a' || optopt == 'p' || optopt == 'l' || optopt == 's')
+        if (optopt == 'q' || optopt == 'r' || optopt == 't' || optopt == 'f' || optopt == 'a' || optopt == 'p' || optopt == 'l' || optopt == 's' || optopt == 'd' || optopt == 'b' || optopt == 'e')
           fprintf(stderr, "Option -%c requires an argument.\n", optopt);
         else if (isprint (optopt))
           fprintf(stderr, "Unknown option `-%c'.\n", optopt);
@@ -128,6 +149,9 @@ int main(int argc, char *argv[]) {
         else if (long_idx == 4) {usage(); return 0;} // --help
         else if (long_idx == 5) paf_file = optarg; // --paf
         else if (long_idx == 6) {version(); return 0;} // --version
+        else if (long_idx == 7) distance_matrix = optarg; // --distance-matrix
+        else if (long_idx == 8) st = atoi(optarg); // --begin
+        else if (long_idx == 9) en = atoi(optarg); // --end
         break;
       default:
         usage();
@@ -254,11 +278,16 @@ int main(int argc, char *argv[]) {
   gzclose(f);
 
   // ---------- process from PAF file ----------
-  int st = 2250;
-  int en = 4450;
-  // for simulated data:
-  st=1100;
-  en=2900;
+  if(st == 0 && en == 0) { // GUESS?
+    // for aav:
+    st = 2250;
+    en = 4450;
+    // for simulated data:
+    /*
+    st=1100;
+    en=2900;
+    */
+  }
 
   /*
    * matrix of reads x pileup, where uint8_t values are characters in this set:
@@ -340,12 +369,14 @@ int main(int argc, char *argv[]) {
     paf_close(p);
     fprintf(stderr, "Closing file '%s'\n", paf_file);
 
-    for(i = 0; i < kv_size(reads); i++) {
-      fprintf(stderr, "%d |", i);
-      for(j = 1500; j < 1650; j++) {
-        fprintf(stderr, "%c", matrix[i][j-st]);
+    if(verbose) {
+      for(i = 0; i < kv_size(reads); i++) {
+        fprintf(stderr, "%d |", i);
+        for(j = st+(en-st)/2-75; j < st+(en-st)/2+75; j++) {
+          fprintf(stderr, "%c", matrix[i][j-st]);
+        }
+        fprintf(stderr, "|\n");
       }
-      fprintf(stderr, "|\n");
     }
   }
 
@@ -372,16 +403,61 @@ int main(int argc, char *argv[]) {
    * D ----0   [0]]
    * E -----
    */
-  fprintf(stderr, "Computing distance matrix...\n");
-  for(i = 0; i < kv_size(full_reads)-1; i++) {
-    dist[i] = calloc((kv_size(full_reads) - (i+1)), sizeof(uint16_t));
-    for(j = i+1; j < kv_size(full_reads); j++) {
-      for(k = 0; k < en-st; k++) {
-        if(matrix[kv_A(full_reads, i)][k] != matrix[kv_A(full_reads, j)][k]) {
-          dist[i][j-i-1]++;
-        }
+
+  FILE *df;
+  uint32_t dm_size; // the squareform size (even though the distance matrix includes only n*(n-1)/2)
+  uint8_t compute_dm = 0;
+  size_t row_size;
+  if(distance_matrix != NULL) {
+    df = fopen(distance_matrix, "rb");
+    if(!df || !fread(&dm_size, 4, 1, df)) {
+      fprintf(stderr, "Didn't find anything in '%s'.\n", distance_matrix);
+      compute_dm = 1;
+    } else {
+      if(dm_size != kv_size(full_reads)) {
+        fprintf(stderr, "Number of full reads (%u) does not match the matrix size (%u)! We'll quit now to avoid overwriting the distance matrix.\n", kv_size(full_reads), dm_size);
+        return 1;
       }
-      //fprintf(stderr, "%d -- %d: %u\n", i, j, dist[i][j-i-1]);
+      fprintf(stderr, "Reading distance matrix from '%s'...\n", distance_matrix);
+      for(i = 0; i < dm_size-1; i++) {
+        row_size = (dm_size - (i+1)) * sizeof(uint16_t);
+        dist[i] = malloc(row_size);
+        fread(dist[i], row_size, 1, df);
+      }
+    }
+    if(df)
+      fclose(df);
+  } else {
+    compute_dm = 1;
+  }
+
+  if(compute_dm) {
+    dm_size = kv_size(full_reads);
+    fprintf(stderr, "Computing distance matrix...\n");
+    for(i = 0; i < dm_size-1; i++) {
+      dist[i] = calloc((dm_size - (i+1)), sizeof(uint16_t));
+      for(j = i+1; j < dm_size; j++) {
+        for(k = 0; k < en-st; k++) {
+          if(matrix[kv_A(full_reads, i)][k] != matrix[kv_A(full_reads, j)][k]) {
+            dist[i][j-i-1]++;
+          }
+        }
+        //fprintf(stderr, "%d -- %d: %u\n", i, j, dist[i][j-i-1]);
+      }
+    }
+    if(distance_matrix != NULL) {
+      fprintf(stderr, "Writing distance matrix (%u reads) to '%s'\n", dm_size, distance_matrix);
+      df = fopen(distance_matrix, "wb");
+      if(!df) {
+        fprintf(stderr, "Failed to open '%s' for writing!\n", distance_matrix);
+        return 1;
+      }
+      fwrite(&dm_size, 4, 1, df); // write 4-byte matrix size
+      for(i = 0; i < dm_size-1; i++) {
+        row_size = (dm_size - (i+1)) * sizeof(uint16_t);
+        fwrite(dist[i], row_size, 1, df);
+      }
+      fclose(df);
     }
   }
   fprintf(stderr, "Agglomerative clustering...\n");
@@ -395,10 +471,10 @@ int main(int argc, char *argv[]) {
   // where the first |full_reads| are read IDs, and |full_reads| -> |full_reads| + |clusters| are higher level cluster IDs
   uint32_t cid = 1; // incremental cluster ID
   for(i = kv_size(clusters)-1; i >= 0; i--) {
-  //for(i = 0; i < kv_size(clusters)-1; i++) {
     if(kv_size(clusters)-1-i <= cutoff) { // this merge should NOT be included, so each new cluster gets a new idx
-    //if(i <= cutoff) { // this merge should NOT be included, so each new cluster gets a new idx
-      fprintf(stderr, "keeping a(%u) <-> b(%u), dist %u: %f\n", kv_A(clusters, i).a, kv_A(clusters, i).b, i, kv_A(clusters, i).dist);
+      if(verbose) {
+        fprintf(stderr, "Splitting bicluster %u: a(%u) <-> b(%u), dist: %f\n", i, kv_A(clusters, i).a, kv_A(clusters, i).b, kv_A(clusters, i).dist);
+      }
       cluster_idx[kv_A(clusters, i).a] = cluster_idx[i + kv_size(full_reads)];
       cluster_idx[kv_A(clusters, i).b] = cid++;
     } else { // these are subclusters, so they just inherit their idx
@@ -413,6 +489,33 @@ int main(int argc, char *argv[]) {
     fprintf(stdout,  "%s\t%u\n", kv_A(readnames, kv_A(full_reads, i)).s, cluster_idx[i]);
   }
 
-  // free: reads, readnames, readmap, refs, refmap, dists, matrix
+  // free: dists, matrix
+  for(i = 0; i < kv_size(reads); i++) {
+    free(matrix[i]);
+  }
+  free(matrix);
+  for(i = 0; i < kv_size(full_reads)-1; i++) {
+    free(dist[i]);
+  }
+  free(dist);
+  for(bin = kh_begin(refmap); bin != kh_end(refmap); bin++) {
+    if(kh_exist(refmap, bin))
+      free((char*)kh_key(refmap, bin));
+  }
+  kh_destroy(faHash, refmap);
+  for(i = 0; i < kv_size(refs); i++) {
+    free(kv_A(refs, i).s);
+  }
+  kv_destroy(refs);
+  for(i = 0; i < kv_size(reads); i++) {
+    free(kv_A(reads, i).s);
+    free(kv_A(readnames, i).s);
+  }
+  kv_destroy(reads);
+  kv_destroy(readnames);
+  kh_destroy(faHash, readmap); // name keys were freed from readnames vector
+  kv_destroy(full_reads); // contains only ints
   free(cluster_idx);
+
+  return 0;
 }

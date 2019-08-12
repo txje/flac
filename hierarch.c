@@ -166,7 +166,7 @@ hierarchy agglomerate_u16(uint16_t **dists, uint32_t n_items) {
       cluster_dists[j+i+1][i] = (float)dists[i][j];
     }
   }
-  fprintf(stderr, "Aggregating...\n");
+  fprintf(stderr, "Clustering...\n");
   hierarchy res = ag(cluster_dists, sizes, n_items);
 
   free(cluster_dists);
