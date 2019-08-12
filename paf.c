@@ -58,6 +58,8 @@ int paf_parse(int l, char *s, paf_rec_t *pr) // s must be NULL terminated
     else if (t >= 12) { // SAM-type key-value pairs
       if(strncmp(q, "cg:Z:", 5) == 0) { // CIGAR
         pr->cigar = q+5;
+      } else {
+        pr->cigar = 0;
       }
     }
     ++t, q = i < l? &s[i+1] : 0;
