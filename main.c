@@ -3,6 +3,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <zlib.h>
+#include <math.h>
 #include "incl/minimap2/minimap.h"
 #include "paf.h"
 #include "incl/klib/khash.h"
@@ -69,6 +70,30 @@ static struct option long_options[] = {
   { "end",                    required_argument, 0, 'e' },
   { 0, 0, 0, 0}
 };
+
+// a shortcut to prevent numerical overflow when doing factorials
+uint32_t choose(int n, int k) {
+  uint32_t a = 1;
+  int i;
+  for(i = 1; i <= k; i++) {
+    a = (a * (n - (k - i))) / i;
+  }
+  return a;
+}
+
+// 2SNV uses exactly this kind of binomial CDF plus bonferroni correction
+// but computes the probability of a specific variant explicitly as p = (#SNP1 * #SNP2) / (#NEITHER * #READS)
+// so that the probability 1-binom_cdf(#SNP1&SNP2 - 1, #READS, p) must be <= 0.01 / choose(#LOCI, 2)
+
+// chance of observing *up to* k successes among n trials with probability of success p
+double binom_cdf(int k, int n, float p) {
+  double a = 0;
+  int i;
+  for(i = 0; i <= k; i++) {
+    a = a + (choose(n, i) * pow(p, i) * pow(1-p, n-i));
+  }
+  return a;
+}
 
 int main(int argc, char *argv[]) {
   mm_idxopt_t iopt;
@@ -170,6 +195,14 @@ int main(int argc, char *argv[]) {
     usage();
     return 1;
   }
+
+  fprintf(stderr, "2 choose 1: %u\n", choose(2, 1));
+  fprintf(stderr, "4 choose 1: %u\n", choose(4, 1));
+  fprintf(stderr, "4 choose 2: %u\n", choose(4, 2));
+  fprintf(stderr, "10 choose 4: %u\n", choose(10, 4));
+  fprintf(stderr, "8 choose 4: %u\n", choose(8, 4));
+  fprintf(stderr, "100 choose 5: %u\n", choose(100, 5));
+  fprintf(stderr, "probability of observing >3 of 100 events with probability 0.01: %f\n", 1-binom_cdf(3, 100, 0.01));
 
   // ---------- general initialization ----------
   int i, j, l;
@@ -392,112 +425,124 @@ int main(int argc, char *argv[]) {
   }
   fprintf(stderr, "%u reads map fully from %d to %d (out of %u)\n", kv_size(full_reads), st, en, kv_size(reads));
 
-  // ---------- pairwise distance ----------
-  int k;
-  uint16_t **dist = malloc((kv_size(full_reads)-1) * sizeof(uint16_t*));
-  /*
-   *   12345  dists:
-   * A -0000  [[0, 0, 0, 0],
-   * B --000   [0, 0, 0],
-   * C ---00   [0, 0],
-   * D ----0   [0]]
-   * E -----
-   */
+  
+  if(strcmp(command, "clust") == 0) {
+    // ---------- pairwise distance ----------
+    int k;
+    uint16_t **dist = malloc((kv_size(full_reads)-1) * sizeof(uint16_t*));
+    /*
+     *   12345  dists:
+     * A -0000  [[0, 0, 0, 0],
+     * B --000   [0, 0, 0],
+     * C ---00   [0, 0],
+     * D ----0   [0]]
+     * E -----
+     */
 
-  FILE *df;
-  uint32_t dm_size; // the squareform size (even though the distance matrix includes only n*(n-1)/2)
-  uint8_t compute_dm = 0;
-  size_t row_size;
-  if(distance_matrix != NULL) {
-    df = fopen(distance_matrix, "rb");
-    if(!df || !fread(&dm_size, 4, 1, df)) {
-      fprintf(stderr, "Didn't find anything in '%s'.\n", distance_matrix);
-      compute_dm = 1;
-    } else {
-      if(dm_size != kv_size(full_reads)) {
-        fprintf(stderr, "Number of full reads (%u) does not match the matrix size (%u)! We'll quit now to avoid overwriting the distance matrix.\n", kv_size(full_reads), dm_size);
-        return 1;
-      }
-      fprintf(stderr, "Reading distance matrix from '%s'...\n", distance_matrix);
-      for(i = 0; i < dm_size-1; i++) {
-        row_size = (dm_size - (i+1)) * sizeof(uint16_t);
-        dist[i] = malloc(row_size);
-        fread(dist[i], row_size, 1, df);
-      }
-    }
-    if(df)
-      fclose(df);
-  } else {
-    compute_dm = 1;
-  }
-
-  if(compute_dm) {
-    dm_size = kv_size(full_reads);
-    fprintf(stderr, "Computing distance matrix...\n");
-    for(i = 0; i < dm_size-1; i++) {
-      dist[i] = calloc((dm_size - (i+1)), sizeof(uint16_t));
-      for(j = i+1; j < dm_size; j++) {
-        for(k = 0; k < en-st; k++) {
-          if(matrix[kv_A(full_reads, i)][k] != matrix[kv_A(full_reads, j)][k]) {
-            dist[i][j-i-1]++;
-          }
-        }
-        //fprintf(stderr, "%d -- %d: %u\n", i, j, dist[i][j-i-1]);
-      }
-    }
+    FILE *df;
+    uint32_t dm_size; // the squareform size (even though the distance matrix includes only n*(n-1)/2)
+    uint8_t compute_dm = 0;
+    size_t row_size;
     if(distance_matrix != NULL) {
-      fprintf(stderr, "Writing distance matrix (%u reads) to '%s'\n", dm_size, distance_matrix);
-      df = fopen(distance_matrix, "wb");
-      if(!df) {
-        fprintf(stderr, "Failed to open '%s' for writing!\n", distance_matrix);
-        return 1;
+      df = fopen(distance_matrix, "rb");
+      if(!df || !fread(&dm_size, 4, 1, df)) {
+        fprintf(stderr, "Didn't find anything in '%s'.\n", distance_matrix);
+        compute_dm = 1;
+      } else {
+        if(dm_size != kv_size(full_reads)) {
+          fprintf(stderr, "Number of full reads (%u) does not match the matrix size (%u)! We'll quit now to avoid overwriting the distance matrix.\n", kv_size(full_reads), dm_size);
+          return 1;
+        }
+        fprintf(stderr, "Reading distance matrix from '%s'...\n", distance_matrix);
+        for(i = 0; i < dm_size-1; i++) {
+          row_size = (dm_size - (i+1)) * sizeof(uint16_t);
+          dist[i] = malloc(row_size);
+          fread(dist[i], row_size, 1, df);
+        }
       }
-      fwrite(&dm_size, 4, 1, df); // write 4-byte matrix size
+      if(df)
+        fclose(df);
+    } else {
+      compute_dm = 1;
+    }
+
+    if(compute_dm) {
+      dm_size = kv_size(full_reads);
+      fprintf(stderr, "Computing distance matrix...\n");
       for(i = 0; i < dm_size-1; i++) {
-        row_size = (dm_size - (i+1)) * sizeof(uint16_t);
-        fwrite(dist[i], row_size, 1, df);
+        dist[i] = calloc((dm_size - (i+1)), sizeof(uint16_t));
+        for(j = i+1; j < dm_size; j++) {
+          for(k = 0; k < en-st; k++) {
+            if(matrix[kv_A(full_reads, i)][k] != matrix[kv_A(full_reads, j)][k]) {
+              dist[i][j-i-1]++;
+            }
+          }
+          //fprintf(stderr, "%d -- %d: %u\n", i, j, dist[i][j-i-1]);
+        }
       }
-      fclose(df);
-    }
-  }
-  fprintf(stderr, "Agglomerative clustering...\n");
-  hierarchy clusters = agglomerate_u16(dist, kv_size(full_reads));
-  uint32_t cutoff = elbow_cutoff(clusters);
-  fprintf(stderr, "cutoff: %u\n", cutoff);
-
-
-  // ---------- output clusters ----------
-  uint32_t *cluster_idx = calloc((kv_size(full_reads) + kv_size(clusters)), sizeof(uint32_t));
-  // where the first |full_reads| are read IDs, and |full_reads| -> |full_reads| + |clusters| are higher level cluster IDs
-  uint32_t cid = 1; // incremental cluster ID
-  for(i = kv_size(clusters)-1; i >= 0; i--) {
-    if(kv_size(clusters)-1-i <= cutoff) { // this merge should NOT be included, so each new cluster gets a new idx
-      if(verbose) {
-        fprintf(stderr, "Splitting bicluster %u: a(%u) <-> b(%u), dist: %f\n", i, kv_A(clusters, i).a, kv_A(clusters, i).b, kv_A(clusters, i).dist);
+      if(distance_matrix != NULL) {
+        fprintf(stderr, "Writing distance matrix (%u reads) to '%s'\n", dm_size, distance_matrix);
+        df = fopen(distance_matrix, "wb");
+        if(!df) {
+          fprintf(stderr, "Failed to open '%s' for writing!\n", distance_matrix);
+          return 1;
+        }
+        fwrite(&dm_size, 4, 1, df); // write 4-byte matrix size
+        for(i = 0; i < dm_size-1; i++) {
+          row_size = (dm_size - (i+1)) * sizeof(uint16_t);
+          fwrite(dist[i], row_size, 1, df);
+        }
+        fclose(df);
       }
-      cluster_idx[kv_A(clusters, i).a] = cluster_idx[i + kv_size(full_reads)];
-      cluster_idx[kv_A(clusters, i).b] = cid++;
-    } else { // these are subclusters, so they just inherit their idx
-      cluster_idx[kv_A(clusters, i).a] = cluster_idx[i + kv_size(full_reads)];
-      cluster_idx[kv_A(clusters, i).b] = cluster_idx[i + kv_size(full_reads)];
     }
+    fprintf(stderr, "Agglomerative clustering...\n");
+    hierarchy clusters = agglomerate_u16(dist, kv_size(full_reads));
+    uint32_t cutoff = elbow_cutoff(clusters);
+    fprintf(stderr, "cutoff: %u\n", cutoff);
+
+
+    // ---------- output clusters ----------
+    uint32_t *cluster_idx = calloc((kv_size(full_reads) + kv_size(clusters)), sizeof(uint32_t));
+    // where the first |full_reads| are read IDs, and |full_reads| -> |full_reads| + |clusters| are higher level cluster IDs
+    uint32_t cid = 1; // incremental cluster ID
+    for(i = kv_size(clusters)-1; i >= 0; i--) {
+      if(kv_size(clusters)-1-i <= cutoff) { // this merge should NOT be included, so each new cluster gets a new idx
+        if(verbose) {
+          fprintf(stderr, "Splitting bicluster %u: a(%u) <-> b(%u), dist: %f\n", i, kv_A(clusters, i).a, kv_A(clusters, i).b, kv_A(clusters, i).dist);
+        }
+        cluster_idx[kv_A(clusters, i).a] = cluster_idx[i + kv_size(full_reads)];
+        cluster_idx[kv_A(clusters, i).b] = cid++;
+      } else { // these are subclusters, so they just inherit their idx
+        cluster_idx[kv_A(clusters, i).a] = cluster_idx[i + kv_size(full_reads)];
+        cluster_idx[kv_A(clusters, i).b] = cluster_idx[i + kv_size(full_reads)];
+      }
+    }
+
+    fprintf(stderr, "%u total clusters\n", cid);
+
+    for(i = 0; i < kv_size(full_reads); i++) {
+      fprintf(stdout,  "%s\t%u\n", kv_A(readnames, kv_A(full_reads, i)).s, cluster_idx[i]);
+    }
+
+    // ---------- clean up clustering memory ----------
+    for(i = 0; i < kv_size(reads); i++) {
+      free(matrix[i]);
+    }
+    free(matrix);
+    for(i = 0; i < kv_size(full_reads)-1; i++) {
+      free(dist[i]);
+    }
+    free(dist);
+    free(cluster_idx);
+  } else if (strcmp(command, "2snv") == 0) {
+    // ---------- variant denoising a la 2SNV ----------
+  } else {
+    fprintf(stderr, "Command '%s' not recognized.\n", command);
+    return 1;
   }
 
-  fprintf(stderr, "%u total clusters\n", cid);
 
-  for(i = 0; i < kv_size(full_reads); i++) {
-    fprintf(stdout,  "%s\t%u\n", kv_A(readnames, kv_A(full_reads, i)).s, cluster_idx[i]);
-  }
-
-  // free: dists, matrix
-  for(i = 0; i < kv_size(reads); i++) {
-    free(matrix[i]);
-  }
-  free(matrix);
-  for(i = 0; i < kv_size(full_reads)-1; i++) {
-    free(dist[i]);
-  }
-  free(dist);
+  // ---------- clean up general memory ----------
   for(bin = kh_begin(refmap); bin != kh_end(refmap); bin++) {
     if(kh_exist(refmap, bin))
       free((char*)kh_key(refmap, bin));
@@ -515,7 +560,6 @@ int main(int argc, char *argv[]) {
   kv_destroy(readnames);
   kh_destroy(faHash, readmap); // name keys were freed from readnames vector
   kv_destroy(full_reads); // contains only ints
-  free(cluster_idx);
 
   return 0;
 }

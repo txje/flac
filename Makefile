@@ -6,7 +6,7 @@ OBJECTS = flac
 all: $(OBJECTS)
 
 flac: main.c hierarch.c paf.c
-	${CC} ${CFLAGS} -o flac main.c hierarch.c paf.c -lz
+	${CC} ${CFLAGS} -o flac main.c hierarch.c paf.c -lz -lm
 
 clean:
 	rm -f flac
