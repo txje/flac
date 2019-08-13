@@ -34,6 +34,10 @@ void version() {
 
 void usage() {
   printf("Usage: flac [options]\n");
+  printf("Commands:\n");
+  printf("  cluster: agglomerative clustering with elbow cutoff\n");
+  printf("  consensus: generate a simple consensus from the given PAF\n");
+  printf("  2snv: explicit denoising by finding linked variants with frequency > expected via binomial distribution\n");
   printf("Options:\n");
   printf("  -q: FASTA/Q[.gz] file with reads\n");
   printf("  -r: Reference FASTA/Q[.gz] or precomputed index file\n");
@@ -93,6 +97,57 @@ double binom_cdf(int k, int n, float p) {
     a = a + (choose(n, i) * pow(p, i) * pow(1-p, n-i));
   }
   return a;
+}
+
+/*
+ * Build a consensus sequence from the given matrix with l *columns* (nt)
+ * - using only rows/cols where cluster_idx[i] == idx
+ */
+uint8_t* consensus(uint8_t **matrix, uint32_t l, uint32_t *full_reads, uint32_t n_full_reads, uint16_t *cluster_idx, uint32_t idx) {
+  uint32_t i, j;
+  uint32_t **alleles = malloc(l * sizeof(uint32_t*));
+  for(i = 0; i < l; i++) {
+    alleles[i] = calloc(6, sizeof(uint32_t)); // A, C, G, T, N, - [del]
+  }
+  for(i = 0; i < n_full_reads; i++) {
+    if(cluster_idx == NULL || cluster_idx[i] == idx) {
+      for(j = 0; j < l; j++) {
+        switch (matrix[full_reads[i]][j]) {
+          case 'A':
+            alleles[j][0]++;
+            break;
+          case 'C':
+            alleles[j][1]++;
+            break;
+          case 'G':
+            alleles[j][2]++;
+            break;
+          case 'T':
+            alleles[j][3]++;
+            break;
+          case 'N':
+            alleles[j][4]++;
+            break;
+          case '-':
+            alleles[j][5]++;
+            break;
+        }
+      }
+    }
+  }
+  uint8_t *cons = malloc(l * sizeof(uint8_t));
+  uint8_t max;
+  for(i = 0; i < l; i++) {
+    max = 0;
+    for(j = 1; j < 6; j++) {
+      if(alleles[i][j] > alleles[i][max]) {
+        max = j;
+      }
+    }
+    cons[i] = (uint8_t)"ACGTN-"[max];
+  }
+  free(alleles);
+  return cons;
 }
 
 int main(int argc, char *argv[]) {
@@ -182,6 +237,18 @@ int main(int argc, char *argv[]) {
         usage();
         return 1;
     }
+  }
+
+  int index;
+  char* command = NULL;
+  for (index = optind; index < argc; index++) {
+    if(index == optind) {
+      command = argv[index];
+    }
+  }
+  if(command == NULL) {
+    usage();
+    return 1;
   }
 
   if(read_fasta == NULL) {
@@ -536,6 +603,19 @@ int main(int argc, char *argv[]) {
     free(cluster_idx);
   } else if (strcmp(command, "2snv") == 0) {
     // ---------- variant denoising a la 2SNV ----------
+    uint16_t *cluster_idx = calloc(kv_size(full_reads), sizeof(uint16_t)); // all reads start in cluster 0
+    uint8_t *cons = consensus(matrix, en-st, full_reads.a, kv_size(full_reads), cluster_idx, 0);
+    // successively split
+  } else if (strcmp(command, "consensus") == 0) {
+    // ---------- generate a simple consensus using all full-length reads ----------
+    uint8_t *cons = consensus(matrix, en-st, full_reads.a, kv_size(full_reads), NULL, 0);
+    fprintf(stdout, ">consensus\n");
+    for(j = 0; j < en-st; j++) {
+      fprintf(stdout, "%c", cons[j]);
+      if((j+1) % 80 == 0) {
+        fprintf(stdout, "\n");
+      }
+    }
   } else {
     fprintf(stderr, "Command '%s' not recognized.\n", command);
     return 1;
