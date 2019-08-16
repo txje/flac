@@ -20,6 +20,8 @@ KSEQ_INIT(gzFile, gzread)
 
 #endif
 
+#define NALLELES 7
+
 typedef struct {
   char* s;
   uint32_t l;
@@ -112,7 +114,7 @@ uint8_t* consensus(uint8_t **matrix, uint32_t l, uint32_t *full_reads, uint32_t 
   uint32_t i, j;
   uint32_t **alleles = malloc(l * sizeof(uint32_t*));
   for(i = 0; i < l; i++) {
-    alleles[i] = calloc(6, sizeof(uint32_t)); // A, C, G, T, N, - [del]
+    alleles[i] = calloc(7, sizeof(uint32_t)); // [unaligned], A, C, G, T, [del], N
   }
   for(i = 0; i < n_full_reads; i++) {
     if(cluster_idx == NULL || cluster_idx[i] == idx) {
@@ -130,10 +132,23 @@ uint8_t* consensus(uint8_t **matrix, uint32_t l, uint32_t *full_reads, uint32_t 
         max = j;
       }
     }
-    cons[i] = (uint8_t)" ACGT-N"[max];
+    cons[i] = max;
+  }
+  for(i = 0; i < l; i++) {
+    free(alleles[i]);
   }
   free(alleles);
   return cons;
+}
+
+// convert a byte array (like the matrix or consensus) to a nucleotide string
+char* c2str(uint8_t* c, uint32_t l) {
+  char* s = malloc(l * sizeof(char));
+  int i;
+  for(i = 0; i < l; i++) {
+    s[i] = " ACGT-N"[c[i]];
+  }
+  return s;
 }
 
 
@@ -153,6 +168,22 @@ int main(int argc, char *argv[]) {
   int verbose = 0;
   int st = 0;
   int en = 0;
+
+  /*
+   * Probability of any given change where indices are:
+   * unaligned = 0, A-T = 1-4, del = 5, N = 6
+   * so, any simple SNP has 1% chance
+   * any deletion has 4% chance
+   * there should be NO unaligned (0) or Ns (6), so any that appear will be infinitely (?) unlikely to occur by chance
+   */
+  double PAIR_PROBS[] = 
+    {0,    0,    0,    0,    0,    0,    0,
+     0, 0.99, 0.01, 0.01, 0.01, 0.04,    0,
+     0, 0.01, 0.99, 0.01, 0.01, 0.04,    0,
+     0, 0.01, 0.01, 0.99, 0.01, 0.04,    0,
+     0, 0.01, 0.01, 0.01, 0.99, 0.04,    0,
+     0, 0.04, 0.04, 0.04, 0.04, 0.96,    0,
+     0,    0,    0,    0,    0,    0,    0};
 
   // ---------- options ----------
   int opt, long_idx;
@@ -602,16 +633,20 @@ int main(int argc, char *argv[]) {
   } else if (strcmp(command, "2snv") == 0) {
     // ---------- variant denoising a la 2SNV ----------
     uint16_t *cluster_idx = calloc(n_full_reads, sizeof(uint16_t)); // all reads start in cluster 0
+
+    kvec_t(uint8_t*) cluster_seqs; // vector of cluster consensus sequences
+    kv_init(cluster_seqs);
+    kv_push(uint8_t*, cluster_seqs, consensus(matrix, l, full_reads.a, n_full_reads, cluster_idx, 0));
+
     uint16_t cid = 1; // incremental cluster index
-    uint8_t *cons = consensus(matrix, l, full_reads.a, n_full_reads, cluster_idx, 0);
     uint8_t keep_splitting = 1; // a flag to mark when we're done iterating
     uint32_t one, two; // indices of the two (possibly linked) loci
     uint32_t best_1, best_2, best_c, best_ct;
     double prob, p;
     uint32_t ***alleles; // for each cluster, a 6x6 matrix of allele-pair counts
     uint8_t a, b, major_a, major_b, minor_a, minor_b; // alleles
-    uint32_t *a_ct = malloc(6 * sizeof(uint32_t)); // allele subset counts
-    uint32_t *b_ct = malloc(6 * sizeof(uint32_t));
+    //uint32_t *a_ct = malloc(NALLELES * sizeof(uint32_t)); // allele subset counts
+    //uint32_t *b_ct = malloc(NALLELES * sizeof(uint32_t));
     uint32_t *cluster_sizes;
     uint32_t n_loci_pairs = (uint32_t)choose(l, 2, 1);
     uint32_t majority_ct; // the # of reads with the majority alleles in a single cluster, single pair of loci
@@ -620,11 +655,12 @@ int main(int argc, char *argv[]) {
       // reset allele counts
       alleles = malloc(cid * sizeof(uint32_t**));
       for(i = 0; i < cid; i++) {
-        alleles[i] = malloc(6 * sizeof(uint32_t*));
-        for(j = 0; j < 6; j++) {
-          alleles[i][j] = malloc(6 * sizeof(uint32_t));
+        alleles[i] = malloc(NALLELES * sizeof(uint32_t*));
+        for(j = 0; j < NALLELES; j++) {
+          alleles[i][j] = malloc(NALLELES * sizeof(uint32_t));
         }
       }
+      fprintf(stderr, "%u clusters\n", cid);
 
       // recompute cluster sizes
       cluster_sizes = calloc(cid, sizeof(uint32_t));
@@ -632,17 +668,23 @@ int main(int argc, char *argv[]) {
         cluster_sizes[cluster_idx[i]]++;
       }
 
-      // precompute significant read cutoffs per cluster
-      uint32_t *cutoffs = malloc(cid * sizeof(uint32_t));
+      // precompute significant read cutoffs per cluster per allele-pair (allele1 a->b (7x7) x allele2 a->b (7x7) * #clusters), so 49^2 * clusters
+      uint32_t *cutoffs = malloc((cid*NALLELES*NALLELES*NALLELES*NALLELES) * sizeof(uint32_t));
       for(i = 0; i < cid; i++) {
-        for(j = 0; j < cluster_sizes[i]; j++) {
-          double pair_prob = 0.0001;
-          fprintf(stderr, "exactly %u: %.20f\n", j, (choose(cluster_sizes[i], j, pow(pair_prob, j) * pow(1-pair_prob, cluster_sizes[i]-j))));
-          p = p + (choose(cluster_sizes[i], j, pow(pair_prob, j) * pow(1-pair_prob, cluster_sizes[i]-j)));
-          fprintf(stderr, "binom_cdf(%u, %u, %f) = %.10f\n", j, cluster_sizes[i], pair_prob, p);
-          if(1-p < 0.01 / n_loci_pairs) {
-            cutoffs[i] = j;
-            break;
+        fprintf(stderr, "cluster %u: %u reads\n", i, cluster_sizes[i]);
+        for(a = 0; a < NALLELES*NALLELES; a++) { // represents a single variant in the space of 7x7 changes
+          for(b = 0; b < NALLELES*NALLELES; b++) { // represents a single variant in the space of 7x7 changes
+            p = 0;
+            for(j = 0; j < cluster_sizes[i]; j++) {
+              //fprintf(stderr, "exactly %u: %.20f\n", j, (choose(cluster_sizes[i], j, pow(pair_prob, j) * pow(1-pair_prob, cluster_sizes[i]-j))));
+              p = p + (choose(cluster_sizes[i], j, pow(PAIR_PROBS[a]*PAIR_PROBS[b], j) * pow(1-(PAIR_PROBS[a]*PAIR_PROBS[b]), cluster_sizes[i]-j)));
+              //fprintf(stderr, "binom_cdf(%u, %u, %f) = %.10f\n", j, cluster_sizes[i], PAIR_PROBS, p);
+              if(1-p < 0.01 / n_loci_pairs) {
+                cutoffs[i*NALLELES*NALLELES*NALLELES*NALLELES+a*NALLELES*NALLELES+b] = j;
+                break;
+              }
+            }
+            fprintf(stderr, "  cutoff for %u -> %u AND %u -> %u: %u\n", a/NALLELES, a%NALLELES, b/NALLELES, b%NALLELES, cutoffs[i*NALLELES*NALLELES*NALLELES*NALLELES+a*NALLELES*NALLELES+b]);
           }
         }
       }
@@ -653,12 +695,12 @@ int main(int argc, char *argv[]) {
       best_2 = 1;
       best_c = 0;
       for(one = 0; one < l-1; one++) {
-        fprintf(stderr, "checking %u vs. all\n", one);
+        //fprintf(stderr, "checking %u vs. all\n", one);
         for(two = one+1; two < l; two++) {
           // reset allele counts
           for(i = 0; i < cid; i++) {
-            for(j = 0; j < 6; j++) {
-              for(k = 0; k < 6; k++) {
+            for(j = 0; j < NALLELES; j++) {
+              for(k = 0; k < NALLELES; k++) {
                 alleles[i][j][k] = 0;
               }
             }
@@ -667,8 +709,8 @@ int main(int argc, char *argv[]) {
           //fprintf(stderr, "checking loci %u and %u\n", one, two);
           // build allele matrix for all cids at once
           for(i = 0; i < n_full_reads; i++) {
-            a = matrix[kv_A(full_reads,i)][one] - 1; // shift so that A is 0 (we shouldn't have any 0 [space/unaligned])
-            b = matrix[kv_A(full_reads,i)][two] - 1;
+            a = matrix[kv_A(full_reads,i)][one];
+            b = matrix[kv_A(full_reads,i)][two];
             alleles[cluster_idx[i]][a][b]++;
           }
           // test each pair for each cid
@@ -676,12 +718,12 @@ int main(int argc, char *argv[]) {
             //fprintf(stderr, "  checking cluster %u\n", i);
             // compute per-row and per-col totals
             /*
-            for(a = 0; a < 6; a++) {
+            for(a = 0; a < NALLELES; a++) {
               a_ct[a] = 0;
               b_ct[a] = 0;
             }
-            for(a = 0; a < 6; a++) {
-              for(b = 0; b < 6; b++) {
+            for(a = 0; a < NALLELES; a++) {
+              for(b = 0; b < NALLELES; b++) {
                 a_ct[a] += alleles[i][a][b];
                 b_ct[b] += alleles[i][a][b];
               }
@@ -689,15 +731,15 @@ int main(int argc, char *argv[]) {
             */
             /*
             fprintf(stderr, "cluster has %u reads\n", cluster_size);
-            for(a = 0; a < 6; a++) {
-              for(b = 0; b < 6; b++) {
+            for(a = 0; a < NALLELES; a++) {
+              for(b = 0; b < NALLELES; b++) {
                 fprintf(stderr, "  %u/%u: %u\n", a, b, alleles[i][a][b]);
               }
             }
             */
             majority_ct = 0;
-            for(a = 0; a < 6; a++) {
-              for(b = 0; b < 6; b++) {
+            for(a = 0; a < NALLELES; a++) {
+              for(b = 0; b < NALLELES; b++) {
                 if(alleles[i][a][b] == 0) continue;
                 if(alleles[i][a][b] > majority_ct) {
                   majority_ct = alleles[i][a][b];
@@ -706,8 +748,8 @@ int main(int argc, char *argv[]) {
                 }
               }
             }
-            for(a = 0; a < 6; a++) {
-              for(b = 0; b < 6; b++) {
+            for(a = 0; a < NALLELES; a++) {
+              for(b = 0; b < NALLELES; b++) {
                 if(a == major_a || b == major_b || alleles[i][a][b] == 0) continue;
                 // 2SNV computes the probability of a specific variant explicitly as p = (#SNP1 * #SNP2) / (#NEITHER * #READS)
                 // so that the probability of observing is 1-binom_cdf(#SNP1&SNP2 - 1, #READS, p) and must be <= 0.01 / choose(#LOCI, 2)
@@ -737,11 +779,12 @@ int main(int argc, char *argv[]) {
                   best_c = cid;
                 }
                 */
-                if(alleles[i][a][b] >= cutoffs[i] && alleles[i][a][b] > best_ct) {
+                if(alleles[i][a][b] >= cutoffs[i*NALLELES*NALLELES*NALLELES*NALLELES+a*NALLELES*NALLELES*NALLELES+major_a*NALLELES*NALLELES+b*NALLELES+major_b] && alleles[i][a][b] > best_ct) {
+                  fprintf(stderr, "  %u -> %u AND %u -> %u has %u reads, needs %u\n", a, major_a, b, major_b, alleles[i][a][b], cutoffs[i*NALLELES*NALLELES*NALLELES*NALLELES+a*NALLELES*NALLELES*NALLELES+major_a*NALLELES*NALLELES+b*NALLELES+major_b]);
                   best_ct = alleles[i][a][b];
                   best_1 = one;
                   best_2 = two;
-                  best_c = cid;
+                  best_c = i;
                   minor_a = a;
                   minor_b = b;
                 }
@@ -750,30 +793,86 @@ int main(int argc, char *argv[]) {
           }
         }
       }
-      fprintf(stderr, "Best pair: %u (%u) and %u (%u) in cluster %u: reads = %u\n", best_1, minor_a, best_2, minor_b, best_c, best_ct);
-      /*
-      if(best_p <= 0.01 / choose(l, 2)) { // it is significant with bonferroni correction
+      if(best_ct == 0) {
+        fprintf(stderr, "No more linked SNVs, finishing up...\n");
+        keep_splitting = 0;
+      } else {
+        fprintf(stderr, "Best pair: %u (%u) and %u (%u) in cluster %u: reads = %u\n", best_1, minor_a, best_2, minor_b, best_c, best_ct);
+        // split best_c by this pair
+        // put every read that has the BOTH new alleles into a new cluster
+        for(i = 0; i < n_full_reads; i++) {
+          if(cluster_idx[i] == best_c) {
+            if(matrix[kv_A(full_reads,i)][best_1] == minor_a && matrix[kv_A(full_reads,i)][best_2] == minor_b) {
+              cluster_idx[i] = cid;
+            }
+          }
+        }
+        // make consensus for new cluster
+        kv_push(uint8_t*, cluster_seqs, consensus(matrix, l, full_reads.a, n_full_reads, cluster_idx, cid));
+        // and remake consensus for split cluster
+        free(kv_A(cluster_seqs, best_c));
+        kv_A(cluster_seqs, best_c) = consensus(matrix, l, full_reads.a, n_full_reads, cluster_idx, best_c);
+        // reassign ALL reads to its most similar cluster
+        uint32_t diff, best_diff;
+        for(i = 0; i < n_full_reads; i++) {
+          best_c = 0; // REPURPOSING best_c here
+          best_diff = l;
+          for(j = 0; j <= cid; j++) {
+            diff = 0;
+            for(k = 0; k < l; k++) {
+              if(matrix[kv_A(full_reads, i)][k] != kv_A(cluster_seqs, j)[k]) {
+                diff++;
+              }
+            }
+            if(diff < best_diff) {
+              best_c = j;
+              best_diff = diff;
+            }
+          }
+          cluster_idx[i] = best_c;
+        }
+        // recompute consensus sequences for all clusters
+        for(j = 0; j <= cid; j++) {
+          free(kv_A(cluster_seqs, j));
+          kv_A(cluster_seqs, j) = consensus(matrix, l, full_reads.a, n_full_reads, cluster_idx, j);
+        }
       }
-      */
 
       // clean up temporary splitting data for next round
+      for(i = 0; i < cid; i++) {
+        for(j = 0; j < NALLELES; j++)
+          free(alleles[i][j]);
+        free(alleles[i]);
+      }
       free(alleles);
       free(cluster_sizes);
       free(cutoffs);
-      break;
+
+      if(keep_splitting)
+        cid++;
     }
-    free(cons);
+    // print then free cluster_seqs
+    //
+    // cluster info is in cluster_idx[full_read_idx] and cluster_seqs(vec)
+    fprintf(stderr, "%u clusters found\n", cid);
+    for(i = 0; i < n_full_reads; i++) {
+      fprintf(stdout,  "%s\t%u\n", kv_A(readnames, kv_A(full_reads, i)).s, cluster_idx[i]);
+    }
+    free(cluster_idx);
+
   } else if (strcmp(command, "consensus") == 0) {
     // ---------- generate a simple consensus using all full-length reads ----------
     uint8_t *cons = consensus(matrix, l, full_reads.a, n_full_reads, NULL, 0);
+    char *conseq = c2str(cons, l);
+    free(cons);
     fprintf(stdout, ">consensus\n");
     for(j = 0; j < en-st; j++) {
-      fprintf(stdout, "%c", cons[j]);
+      fprintf(stdout, "%c", conseq[j]);
       if((j+1) % 80 == 0) {
         fprintf(stdout, "\n");
       }
     }
-    free(cons);
+    free(conseq);
   } else {
     fprintf(stderr, "Command '%s' not recognized.\n", command);
     return 1;
