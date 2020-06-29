@@ -81,6 +81,7 @@ static struct option long_options[] = {
 };
 
 // a shortcut to prevent numerical overflow when doing factorials
+// n choose k (a is just a static multiplier and can be 1 if you don't want any fuss)
 double choose(int n, int k, double a) {
   int i;
   for(i = 1; i <= k; i++) {
@@ -644,10 +645,10 @@ int main(int argc, char *argv[]) {
     uint16_t cid = 1; // incremental cluster index
     uint8_t keep_splitting = 1; // a flag to mark when we're done iterating
     uint32_t one, two; // indices of the two (possibly linked) loci
-    uint32_t best_1, best_2, best_c, best_ct;
+    uint32_t best_1, best_2, best_c, best_ct, a_ct, b_ct;
     double prob, p;
     uint32_t ***alleles; // for each cluster, a 6x6 matrix of allele-pair counts
-    uint8_t a, b, major_a, major_b, minor_a, minor_b; // alleles
+    uint8_t a, b, major_a, major_b, minor_a, minor_b, o; // alleles
     uint32_t *cluster_sizes;
     uint32_t n_loci_pairs = (uint32_t)choose(l, 2, 1);
     uint32_t majority_ct; // the # of reads with the majority alleles in a single cluster, single pair of loci
@@ -696,13 +697,16 @@ int main(int argc, char *argv[]) {
       }
 
       // check if any cluster (idx < cid) has 2 significantly linked SNVs
+      // -- we need to enforce some other rules to make sure they are INDEPENDENT in a sense
+      // -- so they need to be a certain distance apart (let's say 10bp... just for fun [they are often adjacent])
+      // -- and we need to somehow incorporate the cooccurrence by chance given the total frequency of each variant AT THAT site
       best_ct = 0; // best total number of linked reads
       best_1 = 0;
       best_2 = 1;
       best_c = 0;
       for(one = 0; one < l-1; one++) {
         //fprintf(stderr, "checking %u vs. all\n", one);
-        for(two = one+1; two < l; two++) {
+        for(two = one+10; two < l; two++) { // -------------- variants MAY NOT be within 10 bp of each other! ----------------
           // reset allele counts
           for(i = 0; i < cid; i++) {
             for(j = 0; j < NALLELES; j++) {
@@ -745,13 +749,35 @@ int main(int argc, char *argv[]) {
                 // so that the probability of observing is 1-binom_cdf(#SNP1&SNP2 - 1, #READS, p) and must be <= 0.01 / choose(#LOCI, 2)
                 // this is roughly what we're doing... the cutoff that meets choose(#LOCI,2) < 0.01 (and adjusted for multiple testing) is precomputed above
                 if(alleles[i][a][b] >= cutoffs[i*NALLELES*NALLELES*NALLELES*NALLELES+a*NALLELES*NALLELES*NALLELES+major_a*NALLELES*NALLELES+b*NALLELES+major_b] && alleles[i][a][b] > best_ct) {
-                  fprintf(stderr, "  positions %u and %u, cluster %u, %u -> %u AND %u -> %u has %u reads, needs %u\n", one, two, cid, a, major_a, b, major_b, alleles[i][a][b], cutoffs[i*NALLELES*NALLELES*NALLELES*NALLELES+a*NALLELES*NALLELES*NALLELES+major_a*NALLELES*NALLELES+b*NALLELES+major_b]);
-                  best_ct = alleles[i][a][b];
-                  best_1 = one;
-                  best_2 = two;
-                  best_c = i;
-                  minor_a = a;
-                  minor_b = b;
+                  // this is rare enough, so we implement the harder test here that the observed pair be significantly linked given the independent frequency of each
+                  // compute the total for a and b separately
+                  a_ct = 0;
+                  b_ct = 0;
+                  for(o = 1; o < NALLELES-2; o++) {
+                    a_ct += alleles[i][o][b];
+                    b_ct += alleles[i][a][o];
+                  }
+                  float expect = ((float)a_ct / cluster_sizes[i]) *  ((float)b_ct / cluster_sizes[i]);
+                  //fprintf(stderr, "  we expect %f \% reads (%u) this way given that %u and %u had each variant\n", expect, (uint32_t)(expect * cluster_sizes[i]), a_ct, b_ct);
+                  // ...then do a binomial test such that P(this happening) = (#reads choose alleles[i][a][b]) * pow(expect, alleles[i][a][b]) * pow(1-expect, #reads-alleles[i][a][b])
+                  p = 0;
+                  if(expect * cluster_sizes[i] < alleles[i][a][b]) {
+                    for(j = 0; j < alleles[i][a][b]; j++) {
+                      p = p + choose(cluster_sizes[i], alleles[i][a][b], pow(expect, alleles[i][a][b]) * pow(1-expect, cluster_sizes[i]-alleles[i][a][b]));
+                    }
+                  } else {
+                    p = 1;
+                  }
+                  //fprintf(stderr, "  probability pairs are <= %u is %f\n", alleles[i][a][b], p);
+                  if(p <= 0.01) {
+                    fprintf(stderr, "  positions %u and %u, cluster %u, %u -> %u AND %u -> %u has %u reads, needs %u\n", one, two, cid, a, major_a, b, major_b, alleles[i][a][b], cutoffs[i*NALLELES*NALLELES*NALLELES*NALLELES+a*NALLELES*NALLELES*NALLELES+major_a*NALLELES*NALLELES+b*NALLELES+major_b]);
+                    best_ct = alleles[i][a][b];
+                    best_1 = one;
+                    best_2 = two;
+                    best_c = i;
+                    minor_a = a;
+                    minor_b = b;
+                  }
                 }
               }
             }
