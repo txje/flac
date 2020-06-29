@@ -21,6 +21,6 @@ awk '{
   }
 }' aav_nanosim_cluster_test.tsv
 
-#./flac consensus -q $reads -r $ref -p $paf -b 1100 -e 2900 > aav_nanosim_consensus.fasta
+./flac consensus -q $reads -r $ref -p $paf -b 1100 -e 2900 > aav_nanosim_consensus.fasta
 
-./flac 2snv -q $reads -r $ref -p $paf -b 1100 -e 2900 > aav_nanosim_2snv_test.tsv
+#./flac 2snv -q $reads -r $ref -p $paf -b 1100 -e 2900 > aav_nanosim_2snv_test.tsv

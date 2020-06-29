@@ -4,6 +4,7 @@
 #include <stdlib.h>
 #include <zlib.h>
 #include <math.h>
+#include <time.h>
 #include "incl/minimap2/minimap.h"
 #include "paf.h"
 #include "incl/klib/khash.h"
@@ -17,6 +18,8 @@
 
 // init kseq struct
 KSEQ_INIT(gzFile, gzread)
+
+clock_t ts, te;
 
 #endif
 
@@ -174,7 +177,7 @@ int main(int argc, char *argv[]) {
    * unaligned = 0, A-T = 1-4, del = 5, N = 6
    * so, any simple SNP has 1% chance
    * any deletion has 4% chance
-   * there should be NO unaligned (0) or Ns (6), so any that appear will be infinitely (?) unlikely to occur by chance
+   * there should be NO unaligned (0) or Ns (6), so any that appear will be specifically ignored (probability 0 will do this, see check below)
    */
   double PAIR_PROBS[] = 
     {0,    0,    0,    0,    0,    0,    0,
@@ -645,8 +648,6 @@ int main(int argc, char *argv[]) {
     double prob, p;
     uint32_t ***alleles; // for each cluster, a 6x6 matrix of allele-pair counts
     uint8_t a, b, major_a, major_b, minor_a, minor_b; // alleles
-    //uint32_t *a_ct = malloc(NALLELES * sizeof(uint32_t)); // allele subset counts
-    //uint32_t *b_ct = malloc(NALLELES * sizeof(uint32_t));
     uint32_t *cluster_sizes;
     uint32_t n_loci_pairs = (uint32_t)choose(l, 2, 1);
     uint32_t majority_ct; // the # of reads with the majority alleles in a single cluster, single pair of loci
@@ -669,9 +670,12 @@ int main(int argc, char *argv[]) {
       }
 
       // precompute significant read cutoffs per cluster per allele-pair (allele1 a->b (7x7) x allele2 a->b (7x7) * #clusters), so 49^2 * clusters
+      fprintf(stderr, "precomputing variant frequency cutoffs...\n");
       uint32_t *cutoffs = malloc((cid*NALLELES*NALLELES*NALLELES*NALLELES) * sizeof(uint32_t));
       for(i = 0; i < cid; i++) {
-        fprintf(stderr, "cluster %u: %u reads\n", i, cluster_sizes[i]);
+        if(verbose) {
+          fprintf(stderr, "  cluster %u: %u reads\n", i, cluster_sizes[i]);
+        }
         for(a = 0; a < NALLELES*NALLELES; a++) { // represents a single variant in the space of 7x7 changes
           for(b = 0; b < NALLELES*NALLELES; b++) { // represents a single variant in the space of 7x7 changes
             p = 0;
@@ -684,7 +688,9 @@ int main(int argc, char *argv[]) {
                 break;
               }
             }
-            fprintf(stderr, "  cutoff for %u -> %u AND %u -> %u: %u\n", a/NALLELES, a%NALLELES, b/NALLELES, b%NALLELES, cutoffs[i*NALLELES*NALLELES*NALLELES*NALLELES+a*NALLELES*NALLELES+b]);
+            if(verbose) {
+              fprintf(stderr, "    cutoff for %u -> %u AND %u -> %u: %u\n", a/NALLELES, a%NALLELES, b/NALLELES, b%NALLELES, cutoffs[i*NALLELES*NALLELES*NALLELES*NALLELES+a*NALLELES*NALLELES+b]);
+            }
           }
         }
       }
@@ -706,29 +712,12 @@ int main(int argc, char *argv[]) {
             }
           }
 
-          //fprintf(stderr, "checking loci %u and %u\n", one, two);
           // build allele matrix for all cids at once
           for(i = 0; i < n_full_reads; i++) {
-            a = matrix[kv_A(full_reads,i)][one];
-            b = matrix[kv_A(full_reads,i)][two];
-            alleles[cluster_idx[i]][a][b]++;
+            alleles[cluster_idx[i]][matrix[kv_A(full_reads,i)][one]][matrix[kv_A(full_reads,i)][two]]++;
           }
           // test each pair for each cid
           for(i = 0; i < cid; i++) {
-            //fprintf(stderr, "  checking cluster %u\n", i);
-            // compute per-row and per-col totals
-            /*
-            for(a = 0; a < NALLELES; a++) {
-              a_ct[a] = 0;
-              b_ct[a] = 0;
-            }
-            for(a = 0; a < NALLELES; a++) {
-              for(b = 0; b < NALLELES; b++) {
-                a_ct[a] += alleles[i][a][b];
-                b_ct[b] += alleles[i][a][b];
-              }
-            }
-            */
             /*
             fprintf(stderr, "cluster has %u reads\n", cluster_size);
             for(a = 0; a < NALLELES; a++) {
@@ -738,8 +727,8 @@ int main(int argc, char *argv[]) {
             }
             */
             majority_ct = 0;
-            for(a = 0; a < NALLELES; a++) {
-              for(b = 0; b < NALLELES; b++) {
+            for(a = 1; a < NALLELES-2; a++) {
+              for(b = 1; b < NALLELES-2; b++) {
                 if(alleles[i][a][b] == 0) continue;
                 if(alleles[i][a][b] > majority_ct) {
                   majority_ct = alleles[i][a][b];
@@ -748,39 +737,15 @@ int main(int argc, char *argv[]) {
                 }
               }
             }
-            for(a = 0; a < NALLELES; a++) {
-              for(b = 0; b < NALLELES; b++) {
+            // skip 0 (unaligned) and 6 (N), and 5 (del) for that matter
+            for(a = 1; a < NALLELES-2; a++) {
+              for(b = 1; b < NALLELES-2; b++) {
                 if(a == major_a || b == major_b || alleles[i][a][b] == 0) continue;
                 // 2SNV computes the probability of a specific variant explicitly as p = (#SNP1 * #SNP2) / (#NEITHER * #READS)
                 // so that the probability of observing is 1-binom_cdf(#SNP1&SNP2 - 1, #READS, p) and must be <= 0.01 / choose(#LOCI, 2)
-                // this shit doesn't work --
-                /*
-                if(a_ct[a] > alleles[i][a][b]) {
-                  if(b_ct[b] > alleles[i][a][b]) {
-                    prob = ((a_ct[a]-alleles[i][a][b]) * (b_ct[b]-alleles[i][a][b])) / (double)((cluster_size-a_ct[a]-b_ct[b]+alleles[i][a][b]) * cluster_size);
-                  } else {
-                    prob = ((a_ct[a]-alleles[i][a][b])) / (double)((cluster_size-a_ct[a]-b_ct[b]+alleles[i][a][b]) * cluster_size);
-                  }
-                } else {
-                  prob = ((b_ct[b]-alleles[i][a][b])) / (double)((cluster_size-a_ct[a]-b_ct[b]+alleles[i][a][b]) * cluster_size);
-                }
-                */
-                /*
-                prob = 0.01;
-                //fprintf(stderr, "stat check for %u reads of %u with prob = %f\n", alleles[i][a][b], cluster_size, prob);
-                //TODO: chance uses ALL full reads, not the current cluster_size, so it's WRONG
-                p = 1 - chance[alleles[i][a][b]-1]; //binom_cdf(alleles[i][a][b] - 1, cluster_size, prob, chose);
-                //fprintf(stderr, "p: %f\n", p);
-                if(p < best_p) {
-                  fprintf(stderr, "New best p-val: %f at cluster %u, %u : %u\n", p, i, one, two);
-                  best_p = p;
-                  best_1 = one;
-                  best_2 = two;
-                  best_c = cid;
-                }
-                */
+                // this is roughly what we're doing... the cutoff that meets choose(#LOCI,2) < 0.01 (and adjusted for multiple testing) is precomputed above
                 if(alleles[i][a][b] >= cutoffs[i*NALLELES*NALLELES*NALLELES*NALLELES+a*NALLELES*NALLELES*NALLELES+major_a*NALLELES*NALLELES+b*NALLELES+major_b] && alleles[i][a][b] > best_ct) {
-                  fprintf(stderr, "  %u -> %u AND %u -> %u has %u reads, needs %u\n", a, major_a, b, major_b, alleles[i][a][b], cutoffs[i*NALLELES*NALLELES*NALLELES*NALLELES+a*NALLELES*NALLELES*NALLELES+major_a*NALLELES*NALLELES+b*NALLELES+major_b]);
+                  fprintf(stderr, "  positions %u and %u, cluster %u, %u -> %u AND %u -> %u has %u reads, needs %u\n", one, two, cid, a, major_a, b, major_b, alleles[i][a][b], cutoffs[i*NALLELES*NALLELES*NALLELES*NALLELES+a*NALLELES*NALLELES*NALLELES+major_a*NALLELES*NALLELES+b*NALLELES+major_b]);
                   best_ct = alleles[i][a][b];
                   best_1 = one;
                   best_2 = two;
