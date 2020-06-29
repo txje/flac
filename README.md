@@ -2,8 +2,6 @@ A fast implementation of *de novo* clustering for error-prone full-length amplic
 
 Includes two different approaches - hierarchical clustering of pairwise distances, and a locus-based "denoising" approach
 
-Right now, only the hierarchical approach is implemented
-
 Installation
 ------------
 
@@ -22,9 +20,11 @@ To run a quick test:
 Usage
 -----
 
-    ./flac -q <reads.fq> -r <ref.fa> -p <read_to_ref.paf>
-    
     Usage: flac [options]
+    Commands:
+      cluster: agglomerative clustering with elbow cutoff
+      consensus: generate a simple consensus from the given PAF
+      2snv: explicit denoising by finding linked variants with frequency > expected via binomial distribution
     Options:
       -q: FASTA/Q[.gz] file with reads
       -r: Reference FASTA/Q[.gz] or precomputed index file
